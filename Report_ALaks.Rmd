@@ -1,0 +1,250 @@
+---
+title: "Report"
+author: "Alexis Laks"
+date: "16/11/2018"
+output:
+  pdf_document: default
+  html_document: default
+  toc: TRUE
+---
+
+This is my report, you will find here the bulk of my research. I invite you to check the appendix if you want to get further details on my interpretations/conclusions. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=TRUE}
+URL="http://www.statoo.com/DATA/MS/"
+source(paste(URL, "R2wRob.R", sep=""))
+source(paste(URL, "VIF.R", sep=""))
+source(paste(URL, "PlotResidX.R", sep=""))
+source(paste(URL, "ProcStep.R", sep=""))
+source(paste(URL, "GlobalCrit.R", sep=""))
+
+require(ellipse)
+require(leaps)
+
+library(tidyverse)
+library(ggplot2)
+library(leaps)
+library(ellipse)
+```
+
+# Introduction
+
+We are given the task to analyse a dataset (realestate) containing various information on house sales such as the price at which it was sold, the location of the house, various characteristics (pool, garages, etc.) and use this information to create a predictor of sale prices. The idea is to use past data to analyse the variation and links that exist between a set of variables and our outcome variable of interest, the end result being a function that takes in a similar set of characteristics and yields an estimated sale price with a certain level of accuracy.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+realestate <- read_csv("realestate.csv")
+realestate %>% glimpse()
+```
+
+# Exploratory data analysis
+
+I started by looking at the data and how it's structured. When looking at only **Price**, I saw that there was skewness in the distribution of the data which led me to considering a log transformation of the prices. Doing this transformation changes all the interpretation of my models, which I will take into account. 
+I then checked for the distribution of our potential covariates. I saw that the scales of the data were very different as well (values around 5000 for **Sqft**, whereas max of Bedroom was around 7 or 8). I decided then to apply log transformations on the two covariates who had very different scales, namely **Lot** and **Sqft**. I also decided to transform the quality variable into factors to consider them not as levels but as unitary contributors to the model.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+par(mfrow=c(1,2))
+boxplot(realestate %>% select(ID), title = "Distribution of Log of Prices") ## Price and ID are not relevant here, we take them out temporarily
+boxplot(realestate %>%
+  select(-YearBuild, -ID, -Price) %>%
+  mutate(Lot = log(Lot), Sqft = log(Sqft))
+        )
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+realestate_transf <- realestate %>% 
+  mutate(Price = log(Price), Lot = log(Lot), Sqft = log(Sqft)) %>% 
+  select(-ID) %>% 
+  arrange(desc(Price))
+realestate_transf <- realestate_transf %>%
+  mutate(Quality = as.factor(Quality))
+```
+
+Now that I've gone through transformation of my covariates, I decided to check for any multicolinearity problems. To do that I plotted the matrix of correlation of matrices to detect any potential redundant variable. Some variables such as Quality, Bedroom and Bathroom showed strong correlation so to be sure I could keep them, I checked the varaince inflation factors. This test showed that all the factors were below 10 and the mean of factors was below 5 so nothing to worry about. 
+
+# The Model
+
+## Full Model
+
+I started out with a regression on all the covariates available to us, from which I worked down to a more optimal solution of there is one. 
+
+```{r echo=FALSE, warning=FALSE}
+Model_full <- lm(realestate_transf$Price ~., realestate_transf)
+Model_full %>% summary()
+par(mfrow=c(2,2))
+plot(Model_full)
+```
+
+What comes out of my first model is there are 4 non significant variables: the *Intercept*, *Bedroom*, *Airconditionning* and *AdjHighway*. The F statistic yields a very low p-value so we know that at least one of these individually unsignificant variables have a significant relation with our outcome variable, although we can't directly conclude on which one directly.
+Concerning the residuals they seem to satisfy the hypothesis necessary for our model to be valid:
+
+- The residuals are approximately normally distributed from the qqplot.
+- There isn't a very recognisible structure within our residuals in the residuals vs. fitted values so there seems to be a non-linear relationship
+- The scale location plot shows that the assumption of homoscedasticity (equal variance)
+- The residuals vs. leverage plot show that all the data fall within cook's distance so maybe our concerns regarding outliers may not be much of a problem here, which is convenient since taking out outliers from our model must be done with extreme precaution. Although R seems to have detected a few "extreme" points (pt. 1,20,351...)
+
+### Reduced Model:
+
+Since I saw in our data before that I did not have much values for houses near a Highway, I though that this could be the origin of its non-significance, although I'm sure it would have been very relevant in our model if we did have more data. 
+I also thought that it might be that either bedroom or bathroom is a redundant variable although we cheched multicolinearity beforehand. In the end both indicate the capacity of the house so in that sense give info on the same criteria. 
+Thus, I will try reformulating my model while leaving these two variables out and check if my guesses were right.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+Model_reduced <- lm(realestate_transf$Price ~. -Bedroom -AdjHighway, realestate_transf)
+Model_reduced %>% summary()
+par(mfrow=c(2,2))
+plot(Model_full) # Price vs. all other vars
+plot(Model_reduced) # Taking out Bedroom and AdjHighway
+```
+
+After taking out the variables *Bedroom* & *AdjHighway* I get a model with only significant variables according to the T-test, as for the residuals, they verify all the conditions met to justify the hypothesis necessary for our regression method (stated before). They seem to have even improved compared to our previous model taking all variables into account. Although we do see that there is one point which seems to have a large influence, I discuss this potential problem later on. 
+
+In order to really confirm that I have improved my model with the deleted variables I choose, I ran an F-test to confort me in my choice.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+anova(Model_full,Model_reduced)
+```
+
+The p-value I obtain (greater than any tolerable choice of alpha) indicates that I don't reject H0, so deleting the variables I selected seems to make sense here. Although my model seems significant and the residuals seem to pass the conditions required for a valid model, there may be more at stake in **Price** prediction. So I went on testing different hypothesis, those proposed by you and some of my own creation.
+
+
+# Interactions hypothesis:
+
+## Hypothesis proposed:
+
+### 1. Older houses tend to have lower prices:
+
+The trend here is indeed downwards, although there are very few data to confirm this hypothesis, we can see the conf interval of the linear fit grows as we go down in years (less data points so obviously). Although if we do look at the prices from 1950 onwards, we do see an increase. Also, in our model the variable **YearBuild** is very significant, so we can say that prices do tend to be lower for older houses. Although the fact that we lack data for the early part of the XXth century might pose a problem, how can we say we'll be able to predict the price of houses that data from that period if only a dozen data from that time were took into account in our model? 
+
+
+### 2. House with higher bathroom/bedroom ratio should have higher price:
+
+Instead of looking at bathroom/bedroom I would like to test the inverse, in my opinion more bathrooms than bedrooms doesn't present much interest but too many bedrooms for not enough bathrooms can be inconvenient, so we should see a downtrend of prices as that ratio goes up.
+And as expected, this inconvenience we mentionned does seem to have its effect on price, and the interaction is very significant in our model, although the variable Airconditioning lost its significance. Nonetheless there is a downgrade in the residuals compared to our reduced model, we'll need to see if this could be integrated in our model or not using Anova later on. 
+
+
+### 3. School quality impacts the price positively:
+
+This variable should impact positively the price if we are facing a clientèle which have children where surely the school quality will be a criteria of selection among houses, and in turn will be a price argument for the salesman.
+When fitting a linear relationship between both we see there is indeed a positive relation between the price of the house and the quality of the schools nearby, and the confidence interval of the fit seems pretty precise so the data stick to this relation.
+
+
+## My hypothesis
+
+**I want to test two things** 
+
+**1**. It seems as though the *Pool* variable is significant in almost all our models whereas *Airconditioning* almost in none, I want to check both that *Pool* have a positive effect on price, *Airconditionning* doesn't really affect but also that *Airconditionning* might have an influence when the house has no pool. I can check that using the following interaction *Airconditioning x Pool*.
+
+```{r fig.height=4, fig.width=4, message=FALSE, warning=FALSE, include=FALSE}
+realestate_transf %>%
+  select(Price,Pool) %>% 
+  ggplot() +
+  aes(x = Pool, y = Price) + 
+  geom_point(fill = "blue4") +
+  geom_smooth(method = "lm") +
+  labs(title = "Price in function of presence of pool") +
+  theme_minimal()
+realestate_transf %>%
+  select(Price,Airconditioning) %>% 
+  ggplot() +
+  aes(x = Airconditioning, y = Price) + 
+  geom_point(fill = "blue4") +
+  geom_smooth(method = "lm") +
+  labs(title = "Price in function of presence of Airconditioning") +
+  theme_minimal()
+```
+
+There is a positive relation for both, although there isn't a lot of houses with a pool in our data, this may affect the significance of that variable as well as the interaction in our model. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+Model_int_2 <- lm(Price ~. +Airconditioning*Pool -Bedroom -AdjHighway, realestate_transf)
+Model_int_2 %>% summary()
+par(mfrow=c(2,2))
+plot(Model_reduced)
+plot(Model_int_2)
+```
+
+After checking the fit, this interaction is positive, so Airconditioning doesn't affect the same way the price if there's a pool or not as I expected, although the main variable Airconditioning is still not significative. We can try keeping this interaction but not the main variable now that we've seen the main effect is non significant whereas the interaction is. 
+
+**2.** It makes sense to have a lot of parking spaces if you have a big house which can welcome many people, but if it's a small house then it's just a waste of space. So in order to see how *Garage* affects prices in function of the capacity of the house, i'll try out the following interaction *Garage x Bedroom*
+
+```{r fig.height=4, fig.width=4, message=FALSE, warning=FALSE, include=FALSE}
+realestate_transf %>%
+  select(Price,Garage) %>% 
+  ggplot() +
+  aes(x = Garage, y = Price) + 
+  geom_point(fill = "blue4") +
+  geom_smooth(method = "lm") +
+  labs(title = "Price in function of parking spaces") +
+  theme_minimal()
+```
+
+Here again, there is a  strong positive realtionship but for parking spaces exceeding 3 we have very few data to confirm our hypothesis. This can affect the fit to the model but it's still worth a try.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+Model_int_3 <- lm(Price ~. +Garage*Bedroom -AdjHighway, realestate_transf)
+Model_int_3 %>% summary()
+par(mfrow=c(2,2))
+plot(Model_reduced)
+plot(Model_int_3)
+```
+
+This interaction seems to be significant as well! Although we lost significance for the intercept (not that big of a deal, I'll just let the intercept be the intercept) and Airconditioning is non-significant once again.  
+
+# MY MODEL
+
+So my thought is that the interactions I've tested are all significant but I'm not sure they might all be significant together, so we'll integrate them to the model but be very cautious about interpretting them afterwards. Since we distinguished main effects from interaction effects at each hypothesis we tested, we can remove the individual non significant variables related to the interactions and just keep the interaction. This will constitue my final model.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+Model_final <- lm(realestate_transf$Price ~. +Garage*Bedroom +Airconditioning*Pool -Airconditioning -AdjHighway, realestate_transf)
+summary(Model_final)
+par(mfrow=c(2,2))
+plot(Model_final)
+```
+
+I decided to keep my own interactions for originality. All the covariates I considered (interactions included) are significant, but I want to go further and confort my choice by going through model selection processes. 
+Concerning the residuals, they seem to confirm gaussian distribution, non linear pattern and homoscedasticity of the residuals. So the assumptions necessary for our model to hold seem to be verified in our model. All good. 
+
+Before I move on to model selection I want to check for outliers. Although the residuals vs leverage plot shows that we should have nothing to worry about since all the data fall within cook's distance, there seems to be some points that are redundantly identified as outliers with R. Let's have a closer look.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+par(mfrow=c(2,2))
+plot(hatvalues(Model_final), ylab = "Leverage")
+abline(h = 2/nrow(realestate_transf), col = "grey")
+plot(rstandard(Model_final), ylab = "Standardized Residuals")
+plot(rstudent(Model_final), ylab = "Cross-validated Studentized Residuals")
+abline(h = qt(0.025, df = nrow(realestate_transf) - 2),col = "red")
+abline(h = qt(1 - 0.025, df = nrow(realestate_transf) - 2),col = "red")
+plot(cooks.distance(Model_final), ylab="Cook's distance")
+abline(h = qchisq(0.1,2)/2, col = "grey")
+```
+
+Seems one point is really out of the lot from the cook's distance plot, could be the point 495 or 334 we saw with our residual plots earlier, let's see what they look like! 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+potential_outliers <- realestate_transf[c(334,495),]
+potential_outliers %>% 
+  mutate(Price = exp(Price), Lot = exp(Lot), Sqft = exp(Sqft))
+```
+
+The points identified as potential outliers are the only few data we have for very old houses, I don't think it's a good idea to take them as from the graphs they only get our attention but don't seem to be much of a problem. To be sure we can run a robust linear regression and see if that really improves anythbing. I'll confirm my choice of model by looking at selection method criterions.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+realestate_test <- realestate_transf %>% 
+  mutate(GB = Garage*Bedroom) %>% 
+  mutate(AP = Airconditioning*Pool)
+final_model <- lm(Price ~. -Airconditioning -AdjHighway, realestate_test)
+summary(final_model)
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+GlobalCrit(final_model)
+Model_list <- (list(Model_full, Model_reduced, Model_final,final_model))
+sapply(Model_list, BIC)
+```
+
+The GlobalCrit function that tests all combinations of variables in a regression indicates that my model is close to to the best model according to the Cp and AIC criteria (2nd model out of 10 best, they recommend plugging back AdjHighway) So seems we did a good job! We could choose the first one in the list but the deviation in Cp and AIC Between my model (2nd) and the 1st model in the list isn't that big. I prefer staying with less covariates but which are all significant. We see the same thing with thte BIC, the difference isn't big so I'd just stick with my model. 
+Ready to be a realestate agent? 
+
+
